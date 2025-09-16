@@ -1,0 +1,13 @@
+# Ignore build artifacts
+*.o
+*.exe
+*.dll
+*.so
+
+# Ignore IDE settings
+.vscode/
+.vs/
+
+# Ignore build directories
+build/
+out/
