@@ -5,6 +5,9 @@
 #include <boost/mpi.hpp>
 #include <chrono> 
 #include <unordered_map>
+#include <unordered_set>
+#include <mutex>
+#include <chrono>
 #include "repast_hpc/Schedule.h"
 #include "repast_hpc/Properties.h"
 #include "repast_hpc/SharedContext.h"
@@ -57,6 +60,14 @@ private:
     int countOfInfectedHumans;
     int xdim;
     int ydim;
+    // Per-tick neighborhood case counts (reset each tick)
+    int new_cases_oasis = 0;
+    int new_cases_laquinina = 0;
+    int oasis_target_cells = 108;       // approximate cluster size in cells
+    int laquinina_target_cells = 172;   // adjust to match area
+    int oasis_center_x = -1, oasis_center_y = -1;
+    int laquinina_center_x = -1, laquinina_center_y = -1;
+
 
     CSVWriter writer;
     repast::Properties* props;
@@ -71,6 +82,11 @@ private:
     repast::ValueLayerND<int>* valueLayerType;
     repast::ValueLayerND<int>* valuetotalmosquitoes0;
     repast::ValueLayerND<int>* valuetotalmosquitoes1;
+    // Neighborhood tagging layer: 0 = none, 1 = Oasis, 2 = La Quinina
+    repast::ValueLayerND<int>* valueLayerNeighborhood = nullptr;
+    // Bookkeeping: quick membership test (x,y) -> in Oasis / La Quinina
+    std::unordered_set<long long> oasis_cells;
+    std::unordered_set<long long> laquinina_cells;
 
     // Temperature time series
     std::vector<std::vector<int>> dataTemperatures;
@@ -94,10 +110,19 @@ private:
     std::mutex patchMutex;
     std::mutex valueLayerMutex;
 
+    // Pack coords into a 64-bit key for the sets
+    inline long long pack_xy(int x, int y) const {
+        return (static_cast<long long>(x) << 32) | (static_cast<unsigned long long>(y));
+    }
+
 public:
     RepastHPCModel(std::string propsFile, int argc, char** argv, boost::mpi::communicator* comm);
     ~RepastHPCModel();
-    
+
+    // --- Neighborhood assignment API ---
+    void assignNeighborhoodCluster(const std::string& name, int nid,
+                                int cx, int cy, int target_cells);
+    void resetNeighborhoodCounters();    
     void init();
     void initHumans();
     void initGridValueLayers();
