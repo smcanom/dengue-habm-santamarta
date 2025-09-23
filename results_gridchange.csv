@@ -1,0 +1,4 @@
+tick,TotalHumans,Susceptible,Exposed,Infected,Recovered,New Cases per day
+1,10000,9990,0,10,0,0
+2,10000,9960,30,10,0,0
+3,10000,9951,25,14,10,14

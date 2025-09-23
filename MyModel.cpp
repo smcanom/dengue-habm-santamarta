@@ -105,12 +105,15 @@ RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boo
     << "Number of patches (centroids): " << patchCenters.size() << "\n";
 
     border_points = {
+            {190,25},
+            {188,35},
+            {175,28},
             {155, 0},   // Top-middle dip
-            {130, 25},  // First rightward dip
+            {130, 15},  // First rightward dip
             {110, 0},   // Leftward recovery
-            {75, 30},   // Second rightward dip
-            {45, 15},   // Leftward movement
-            {0, 45}     // Bottom position
+            {75, 20},   // Second rightward dip
+            {45, 10},   // Leftward movement
+            {0, 30}     // Bottom position
         };
 
 	//create a discrete space
@@ -472,11 +475,11 @@ void RepastHPCModel::initGridValueLayers() {
 }
 double RepastHPCModel::get_border_x(int coordY) {
     // Handle edge cases
-    if (coordY >= 155) return 0;
-    if (coordY <= 0) return 45;
+    if (coordY >= 190) return 25;
+    if (coordY <= 0) return 35;
 
     // Safety check for empty vector
-    if (border_points.empty()) return 45;
+    if (border_points.empty()) return 35;
 
     // Find segment containing coordY
     for (size_t i = 0; i < border_points.size() - 1; i++) {
@@ -491,7 +494,7 @@ double RepastHPCModel::get_border_x(int coordY) {
             return x1 + fraction * (x2 - x1);
         }
     }
-    return 45; // Fallback
+    return 35; // Fallback
 }
 
 void RepastHPCModel::runAllHumans() {
