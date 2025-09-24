@@ -809,7 +809,7 @@ void RepastHPCModel::runAllPatches() {
         int T = valueLayerTemperature->getValueAt(pt, err);
         // 1. Check for retrieval errors
         if (err) {
-        ::cerr << "Error getting values at patch [" << i 
+        std::cerr << "Error getting values at patch [" << i 
                     << "] with coords (" << coordX << "," << coordY << ")" 
                     << std::endl;
         continue;
@@ -826,7 +826,7 @@ void RepastHPCModel::runAllPatches() {
         }
 
         // 3. Validate temperature
-        std//    Suppose your model expects T between, say, 0°C and 50°C:
+        //    Suppose your model expects T between, say, 0°C and 50°C:
         if (T < 0 || T > 50) {
         std::cerr << "Warning: Implausible temperature at patch [" << i 
                     << "]: T=" << T << "°C. Clamping to [0,50]." 

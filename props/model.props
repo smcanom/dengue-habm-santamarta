@@ -1,7 +1,7 @@
 #Properties file
-stop.at = 10
-count.of.humans = 10000
-count.of.infected.humans = 10
+stop.at = 540
+count.of.humans = 25000
+count.of.infected.humans = 5
 
 x.dim=135
 y.dim=200
