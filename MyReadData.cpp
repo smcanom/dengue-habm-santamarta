@@ -5,8 +5,6 @@
 #include <sstream>
 #include <vector>
 #include <boost/algorithm/string.hpp>
-#include "gdal/gdal.h"
-#include "gdal/ogrsf_frmts.h"
 #include <numeric>  
 
 using namespace std;

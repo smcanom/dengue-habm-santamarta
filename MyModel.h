@@ -87,6 +87,8 @@ private:
     // Bookkeeping: quick membership test (x,y) -> in Oasis / La Quinina
     std::unordered_set<long long> oasis_cells;
     std::unordered_set<long long> laquinina_cells;
+    // Track which discrete cells are active (derived from patchCenters)
+    std::unordered_set<long long> active_cells;
 
     // Temperature time series
     std::vector<std::vector<int>> dataTemperatures;
@@ -134,6 +136,7 @@ public:
     void initSchedule(repast::ScheduleRunner& runner);
     double get_border_x(int coordY);
     void printExecutionTime(); 
+    void validateNeighborhoodsResidentialOnly();
 
     // helpers
     int ageInitializer(double prob);

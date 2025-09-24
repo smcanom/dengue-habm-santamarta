@@ -1,5 +1,5 @@
 #Properties file
-stop.at = 365
+stop.at = 10
 count.of.humans = 10000
 count.of.infected.humans = 10
 

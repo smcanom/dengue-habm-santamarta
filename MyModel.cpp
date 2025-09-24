@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <queue>
 #include <vector>
 #include <boost/mpi.hpp>
 #include "repast_hpc/AgentId.h"
@@ -36,6 +37,95 @@ void HumanPackageProvider::provideContent(repast::AgentRequest req, std::vector<
     std::vector<repast::AgentId> ids = req.requestedAgents();
     for(size_t i = 0; i < ids.size(); i++){
         providePackage(agents->getAgent(ids[i]), out);
+    }
+}
+
+void RepastHPCModel::resetNeighborhoodCounters() {
+	new_cases_oasis = 0;
+	new_cases_laquinina = 0;
+}
+
+void RepastHPCModel::assignNeighborhoodCluster(const std::string& name, int nid,
+                                               int cx, int cy, int target_cells) {
+    using Pt = std::pair<int,int>;
+    std::queue<Pt> q;
+    std::unordered_set<long long> visited;
+
+    auto try_enqueue = [&](int x, int y) {
+        if (x < 0 || x >= xdim || y < 0 || y >= ydim) return;
+        long long key = pack_xy(x,y);
+        if (visited.count(key)) return;
+        if (!active_cells.count(key)) return; // only active cells
+
+        bool err = false;
+        repast::Point<int> pt(x,y);
+        int t = valueLayerType->getValueAt(pt, err);
+        if (err || t != 1) return;            // residential only
+        int cur = valueLayerNeighborhood->getValueAt(pt, err);
+        if (err || cur != 0) return;          // avoid overlap
+        visited.insert(key);
+        q.emplace(x,y);
+    };
+
+    auto find_residential_seed = [&]() -> bool {
+        const int max_radius = std::max(xdim, ydim);
+        for (int r = 0; r <= max_radius; ++r) {
+            for (int dx = -r; dx <= r; ++dx) {
+                for (int dy = -r; dy <= r; ++dy) {
+                    if (std::abs(dx) != r && std::abs(dy) != r) continue; // ring border
+                    int x = cx + dx;
+                    int y = cy + dy;
+                    if (x < 0 || x >= xdim || y < 0 || y >= ydim) continue;
+                    long long key = pack_xy(x,y);
+                    if (!active_cells.count(key)) continue;
+                    bool err = false;
+                    repast::Point<int> pt(x,y);
+                    int t = valueLayerType->getValueAt(pt, err);
+                    if (!err && t == 1) {
+                        int cur = valueLayerNeighborhood->getValueAt(pt, err);
+                        if (!err && cur == 0) {
+                            visited.insert(key);
+                            q.emplace(x,y);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    };
+
+    if (!find_residential_seed()) {
+        std::cerr << "[Neighborhood " << name << "] Unable to find a residential seed near ("
+                  << cx << "," << cy << ")" << std::endl;
+        return;
+    }
+
+    int filled = 0;
+    while (!q.empty() && filled < target_cells) {
+        auto cur = q.front(); q.pop();
+        int x = cur.first, y = cur.second;
+        bool err = false;
+        repast::Point<int> pt(x,y);
+        int existing = valueLayerNeighborhood->getValueAt(pt, err);
+        if (!err && existing == 0) {
+            valueLayerNeighborhood->setValueAt(nid, pt, err);
+            long long key = pack_xy(x,y);
+            if (nid == 1) oasis_cells.insert(key);
+            else if (nid == 2) laquinina_cells.insert(key);
+            ++filled;
+
+            // 4-neighbor expansion
+            try_enqueue(x+1,y);
+            try_enqueue(x-1,y);
+            try_enqueue(x,y+1);
+            try_enqueue(x,y-1);
+        }
+    }
+
+    if (filled < target_cells) {
+        std::cerr << "[Neighborhood " << name << "] requested " << target_cells
+                  << " cells, assigned " << filled << "." << std::endl;
     }
 }
 
@@ -92,11 +182,15 @@ RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boo
 	repast::Point<double> extent(xdim, ydim);  // Use dimensions from properties
 	repast::GridDimensions gd(origin,extent);
 
-	//define process dimensions 
+	//define process dimensions based on communicator size
 	std::vector<int> processDims;
-	processDims.push_back(2);//there will be 2 proceses in the x dimension
-	processDims.push_back(2);//there will be 2 proceses in the y dimension
-	//this indicates that we will be runnning the simulation with 4 proceses
+	int world_size = comm->size();
+	int dims_x = std::max(1, (int)std::floor(std::sqrt((double)world_size)));
+	while (world_size % dims_x != 0) { --dims_x; }
+	int dims_y = world_size / dims_x;
+	processDims.push_back(dims_x);
+	processDims.push_back(dims_y);
+	// e.g., 1->(1,1), 4->(2,2), 8->(2,4) etc.
 
 	ReadData reader;
  
@@ -137,6 +231,8 @@ RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boo
 
     
 	valueLayerType=new repast::ValueLayerND<int>(processDims, gd, bufferSize, false);
+	// Neighborhood tagging layer: 0 = none, 1 = Oasis, 2 = La Quinina
+	valueLayerNeighborhood = new repast::ValueLayerND<int>(processDims, gd, bufferSize, false);
 
 	//These value layers store the total mosquitoes on t-2.
 	valuetotalmosquitoes0 = new repast::ValueLayerND<int>(processDims, gd, bufferSize, false);
@@ -198,6 +294,10 @@ RepastHPCModel::~RepastHPCModel() {
     if (valueLayerType) {
         delete valueLayerType;
         valueLayerType = nullptr;
+    }
+    if (valueLayerNeighborhood) {
+        delete valueLayerNeighborhood;
+        valueLayerNeighborhood = nullptr;
     }
     if (valuetotalmosquitoes0) {
         delete valuetotalmosquitoes0;
@@ -401,8 +501,7 @@ void RepastHPCModel::initGridValueLayers() {
         valuetotalmosquitoes0->setValueAt(total, location, err);
         valuetotalmosquitoes1->setValueAt(total, location, err);
         // then synchronize once, so both layers are non‐zero at tick=1
-        valuetotalmosquitoes0->synchronize();
-        valuetotalmosquitoes1->synchronize();
+        // (sync once after initialization, not per-cell)
         valueLayerSuceptibleMosquitoes->setValueAt(rand_susc, location, err);
         valueLayerExposedMosquitoes->setValueAt(rand_exp, location, err);
         valueLayerInfectedMosquitoes->setValueAt(rand_inf, location, err);
@@ -458,6 +557,8 @@ void RepastHPCModel::initGridValueLayers() {
 
         bool errType = false;
         valueLayerType->setValueAt(type, location, errType);
+        // Track active cells for neighborhood assignment
+        active_cells.insert(pack_xy(coordX, coordY));
         ++currentLocation;
         // Calcular y mostrar el progreso
         double progress = (static_cast<double>(currentLocation) / N) * 100.0;
@@ -472,6 +573,67 @@ void RepastHPCModel::initGridValueLayers() {
     valueLayerInfectedMosquitoes->synchronize();
     valueLayerTemperature->synchronize();
     valueLayerType->synchronize();
+    valuetotalmosquitoes0->synchronize();
+    valuetotalmosquitoes1->synchronize();
+
+    // 3.7 Assign neighborhoods after type layer is populated
+    {
+        int oasis_cx = 90;  // within [80,100]
+        int oasis_cy = 180; // within [170,190]
+        int laq_cx   = 38;  // within [30,45]
+        int laq_cy   = 120; // within [115,125]
+
+        oasis_center_x = oasis_cx; oasis_center_y = oasis_cy;
+        laquinina_center_x = laq_cx; laquinina_center_y = laq_cy;
+
+        assignNeighborhoodCluster("Oasis", 1, oasis_cx, oasis_cy, oasis_target_cells);
+        assignNeighborhoodCluster("La Quinina", 2, laq_cx, laq_cy, laquinina_target_cells);
+
+        valueLayerNeighborhood->synchronize();
+
+        // Validate: all neighborhood cells must be residential (type=1)
+        validateNeighborhoodsResidentialOnly();
+
+        // Optional debug CSV of assigned cells
+        try {
+            std::ofstream dbg("neighborhood_cells.csv", std::ofstream::trunc);
+            dbg << "neighborhood,x,y\n";
+            for (const auto& key : oasis_cells) {
+                int x = static_cast<int>(key >> 32);
+                int y = static_cast<int>(key & 0xFFFFFFFFULL);
+                dbg << "Oasis," << x << "," << y << "\n";
+            }
+            for (const auto& key : laquinina_cells) {
+                int x = static_cast<int>(key >> 32);
+                int y = static_cast<int>(key & 0xFFFFFFFFULL);
+                dbg << "La Quinina," << x << "," << y << "\n";
+            }
+        } catch (...) {
+            std::cerr << "Warning: failed to write neighborhood_cells.csv" << std::endl;
+        }
+    }
+}
+
+void RepastHPCModel::validateNeighborhoodsResidentialOnly(){
+    auto check_set = [&](const std::unordered_set<long long>& cells, const char* name){
+        int non_res = 0;
+        for (const auto& key : cells) {
+            int x = static_cast<int>(key >> 32);
+            int y = static_cast<int>(key & 0xFFFFFFFFULL);
+            bool err = false;
+            repast::Point<int> pt(x,y);
+            int t = valueLayerType->getValueAt(pt, err);
+            if (err || t != 1) {
+                ++non_res;
+            }
+        }
+        if (non_res > 0) {
+            std::cerr << "Neighborhood validation: " << name << " has " << non_res
+                      << " non-residential cells tagged!" << std::endl;
+        }
+    };
+    check_set(oasis_cells, "Oasis");
+    check_set(laquinina_cells, "La Quinina");
 }
 double RepastHPCModel::get_border_x(int coordY) {
     // Handle edge cases
@@ -505,6 +667,9 @@ void RepastHPCModel::runAllHumans() {
     static const std::array<std::string,3> phaseLabels = {
       "Primary activity", "Leisure activity", "Home return"
     };
+
+    // Ensure per-tick unique counting for newly infected humans across all phases
+    std::unordered_set<long long> counted_new_cases_this_tick;
 
     for (int phase = 0; phase < 3; ++phase) {
       std::cout << "=== Phase: " << phaseLabels[phase] << " ===\n";
@@ -549,7 +714,23 @@ void RepastHPCModel::runAllHumans() {
           [](Human* hh){ return hh->getInfectionState() == "infected"; });
 
         h->calculateInfectionProbabilityHuman(infd, susc, nHumans);
+        // Apply infection update after each movement phase
         h->actualizeSEIRStatus(&context);
+
+        // Count newly infected by neighborhood
+        if (h->isNewlyInfected()) {
+          long long human_key = (static_cast<long long>(id.id()) << 32)
+                                | (unsigned long long)id.startingRank();
+          if (!counted_new_cases_this_tick.count(human_key)) {
+            bool err_n = false;
+            int nid = valueLayerNeighborhood->getValueAt(pt, err_n);
+            if (!err_n) {
+              if (nid == 1) ++new_cases_oasis;
+              else if (nid == 2) ++new_cases_laquinina;
+            }
+            counted_new_cases_this_tick.insert(human_key);
+          }
+        }
 
         int m1 = valuetotalmosquitoes1->getValueAt(pt, err);
         int m0 = valuetotalmosquitoes0->getValueAt(pt, err);
@@ -628,7 +809,7 @@ void RepastHPCModel::runAllPatches() {
         int T = valueLayerTemperature->getValueAt(pt, err);
         // 1. Check for retrieval errors
         if (err) {
-        std::cerr << "Error getting values at patch [" << i 
+        ::cerr << "Error getting values at patch [" << i 
                     << "] with coords (" << coordX << "," << coordY << ")" 
                     << std::endl;
         continue;
@@ -645,7 +826,7 @@ void RepastHPCModel::runAllPatches() {
         }
 
         // 3. Validate temperature
-        //    Suppose your model expects T between, say, 0°C and 50°C:
+        std//    Suppose your model expects T between, say, 0°C and 50°C:
         if (T < 0 || T > 50) {
         std::cerr << "Warning: Implausible temperature at patch [" << i 
                     << "]: T=" << T << "°C. Clamping to [0,50]." 
@@ -698,6 +879,11 @@ void RepastHPCModel::initRecords(){
 		/* std::ofstream ofs("test.csv", std::ofstream::trunc);
 		ofs << "tick"<< ","<<"TotalHumans"<< ","<<"Susceptible"<<","<<"Exposed"<<","<<"Infected"<<","<<"Recovered"<<"\n";
 		ofs.close(); */
+
+        // Initialize weekly neighborhood CSV
+        std::ofstream ofs2("weekly_neighborhood_cases.csv", std::ofstream::trunc);
+        ofs2 << "week,new_cases_oasis,new_cases_laquinina\n";
+        ofs2.close();
 	}
 }
 void RepastHPCModel::recordResults(){
@@ -708,6 +894,17 @@ void RepastHPCModel::recordResults(){
 		/* std::ofstream outfile;
 		outfile.open("test.csv", std::ios_base::app); // append instead of overwrite
 		outfile << tick << ","<<countOfHumans<< ","<<totals[0]<<","<<totals[1]<<","<<totals[2]<<","<<totals[3]<<"\n"; */
+
+        // Every 7 ticks (excluding tick 0), write weekly neighborhood totals and reset
+        int tick = repast::RepastProcess::instance()->getScheduleRunner().currentTick();
+        if (tick != 0 && (tick % 7) == 0) {
+            std::ofstream ofs("weekly_neighborhood_cases.csv", std::ios_base::app);
+            int week = tick / 7;
+            ofs << week << "," << new_cases_oasis << "," << new_cases_laquinina << "\n";
+            ofs.close();
+            new_cases_oasis = 0;
+            new_cases_laquinina = 0;
+        }
 	}
 }
 
@@ -824,9 +1021,11 @@ int RepastHPCModel::ageInitializer(double prob) {
 	if (0.9768 <= prob && prob < 0.9890) {
 		return repast::Random::instance()->createUniIntGenerator(75, 79).next();
 	}
-	if (0.9890 <= prob && prob <= 1) {
-		return repast::Random::instance()->createUniIntGenerator(80, 90).next();
-	} 
+    if (0.9890 <= prob && prob <= 1) {
+        return repast::Random::instance()->createUniIntGenerator(80, 90).next();
+    }
+    // Fallback to a reasonable age if rounding errors occur
+    return 30;
 } 
 
 //metodo auxiliar para la inizialicion
@@ -880,9 +1079,9 @@ std::vector<int> RepastHPCModel::placeSelector(int location_value) {
     }
 
     // 2) Prepare random index generator over all patches
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<size_t> dist(0, patchCenters.size() - 1);
+    // Use Repast RNG for reproducibility across ranks and runs
+    auto& rng = *repast::Random::instance();
+    auto uni_idx = rng.createUniIntGenerator(0, (int)patchCenters.size() - 1);
 
     std::vector<int> place(2);
     int act_location = -1;
@@ -890,7 +1089,7 @@ std::vector<int> RepastHPCModel::placeSelector(int location_value) {
 
     // 3) Loop until we find a patch whose type matches location_value
     while (act_location != location_value) {
-        size_t idx = dist(gen);
+        size_t idx = static_cast<size_t>(uni_idx.next());
         double rawX = patchCenters[idx].first;
         double rawY = patchCenters[idx].second;
 
