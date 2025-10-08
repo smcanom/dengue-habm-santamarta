@@ -63,6 +63,8 @@ private:
     // Per-tick neighborhood case counts (reset each tick)
     int new_cases_oasis = 0;
     int new_cases_laquinina = 0;
+    int total_humans_oasis = 0;
+    int total_humans_laquinina = 0;
     int oasis_target_cells = 108;       // approximate cluster size in cells
     int laquinina_target_cells = 172;   // adjust to match area
     int oasis_center_x = -1, oasis_center_y = -1;

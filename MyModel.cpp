@@ -8,6 +8,7 @@
 #include <random>
 #include <queue>
 #include <vector>
+#include <iomanip>
 #include <boost/mpi.hpp>
 #include "repast_hpc/AgentId.h"
 #include "repast_hpc/RepastProcess.h"
@@ -50,8 +51,13 @@ void RepastHPCModel::assignNeighborhoodCluster(const std::string& name, int nid,
     using Pt = std::pair<int,int>;
     std::queue<Pt> q;
     std::unordered_set<long long> visited;
+    
+    int residential_count = 0;
+    int total_count = 0;
+    const double MIN_RESIDENTIAL_RATIO = 0.90; // At least 90% residential
 
-    auto try_enqueue = [&](int x, int y) {
+    // Modified try_enqueue: allow non-residential cells within a small radius for contiguity
+    auto try_enqueue = [&](int x, int y, int distance_from_seed) {
         if (x < 0 || x >= xdim || y < 0 || y >= ydim) return;
         long long key = pack_xy(x,y);
         if (visited.count(key)) return;
@@ -60,11 +66,34 @@ void RepastHPCModel::assignNeighborhoodCluster(const std::string& name, int nid,
         bool err = false;
         repast::Point<int> pt(x,y);
         int t = valueLayerType->getValueAt(pt, err);
-        if (err || t != 1) return;            // residential only
+        if (err) return;
+        
         int cur = valueLayerNeighborhood->getValueAt(pt, err);
         if (err || cur != 0) return;          // avoid overlap
-        visited.insert(key);
-        q.emplace(x,y);
+        
+        // Allow non-residential cells if:
+        // 1) We're still building and ratio is good, OR
+        // 2) It's residential
+        bool is_residential = (t == 1);
+        bool would_maintain_ratio = true;
+        
+        if (!is_residential && total_count > 0) {
+            // Check if adding this non-residential cell would drop below threshold
+            double new_ratio = static_cast<double>(residential_count) / (total_count + 1);
+            would_maintain_ratio = (new_ratio >= MIN_RESIDENTIAL_RATIO);
+            
+            // Also limit non-residential cells to nearby areas (within ~15 cells of seed)
+            int dx = std::abs(x - cx);
+            int dy = std::abs(y - cy);
+            if (dx * dx + dy * dy > 225) { // radius ~15
+                would_maintain_ratio = false;
+            }
+        }
+        
+        if (is_residential || would_maintain_ratio) {
+            visited.insert(key);
+            q.emplace(x,y);
+        }
     };
 
     auto find_residential_seed = [&]() -> bool {
@@ -109,19 +138,39 @@ void RepastHPCModel::assignNeighborhoodCluster(const std::string& name, int nid,
         repast::Point<int> pt(x,y);
         int existing = valueLayerNeighborhood->getValueAt(pt, err);
         if (!err && existing == 0) {
+            // Check cell type before adding
+            int t = valueLayerType->getValueAt(pt, err);
+            bool is_residential = (!err && t == 1);
+            
+            // Add the cell
             valueLayerNeighborhood->setValueAt(nid, pt, err);
             long long key = pack_xy(x,y);
             if (nid == 1) oasis_cells.insert(key);
             else if (nid == 2) laquinina_cells.insert(key);
             ++filled;
+            ++total_count;
+            if (is_residential) ++residential_count;
 
+            // Calculate distance from seed for neighbor expansion
+            int dist = std::abs(x - cx) + std::abs(y - cy);
+            
             // 4-neighbor expansion
-            try_enqueue(x+1,y);
-            try_enqueue(x-1,y);
-            try_enqueue(x,y+1);
-            try_enqueue(x,y-1);
+            try_enqueue(x+1, y, dist+1);
+            try_enqueue(x-1, y, dist+1);
+            try_enqueue(x, y+1, dist+1);
+            try_enqueue(x, y-1, dist+1);
         }
     }
+
+    double final_residential_ratio = (total_count > 0) 
+        ? static_cast<double>(residential_count) / total_count 
+        : 0.0;
+    
+    std::cout << "[Neighborhood " << name << "] assigned " << filled << " cells ("
+              << residential_count << " residential, " 
+              << (total_count - residential_count) << " non-residential, "
+              << std::fixed << std::setprecision(1) 
+              << (final_residential_ratio * 100.0) << "% residential)" << std::endl;
 
     if (filled < target_cells) {
         std::cerr << "[Neighborhood " << name << "] requested " << target_cells
@@ -268,10 +317,17 @@ RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boo
 }
 
 RepastHPCModel::~RepastHPCModel() {
-    // Delete properties
-    if (props) {
-        delete props;
-        props = nullptr;
+    // Clear agents from context first
+    // The context will manage agent cleanup
+    
+    // Delete agent communication helpers BEFORE deleting value layers
+    if (provider) {
+        delete provider;
+        provider = nullptr;
+    }
+    if (receiver) {
+        delete receiver;
+        receiver = nullptr;
     }
 
     // Delete value layers
@@ -308,14 +364,10 @@ RepastHPCModel::~RepastHPCModel() {
         valuetotalmosquitoes1 = nullptr;
     }
 
-    // Delete agent communication helpers
-    if (provider) {
-        delete provider;
-        provider = nullptr;
-    }
-    if (receiver) {
-        delete receiver;
-        receiver = nullptr;
+    // Delete properties
+    if (props) {
+        delete props;
+        props = nullptr;
     }
 
     // Clear containers
@@ -327,6 +379,9 @@ RepastHPCModel::~RepastHPCModel() {
     studyLocations.clear();
     workLocations.clear();
     otherActivitiesLocations.clear();
+    oasis_cells.clear();
+    laquinina_cells.clear();
+    active_cells.clear();
 }
  void RepastHPCModel::init(){
 	initGridValueLayers();
@@ -616,7 +671,8 @@ void RepastHPCModel::initGridValueLayers() {
 
 void RepastHPCModel::validateNeighborhoodsResidentialOnly(){
     auto check_set = [&](const std::unordered_set<long long>& cells, const char* name){
-        int non_res = 0;
+        int residential = 0;
+        int non_residential = 0;
         for (const auto& key : cells) {
             int x = static_cast<int>(key >> 32);
             int y = static_cast<int>(key & 0xFFFFFFFFULL);
@@ -624,12 +680,23 @@ void RepastHPCModel::validateNeighborhoodsResidentialOnly(){
             repast::Point<int> pt(x,y);
             int t = valueLayerType->getValueAt(pt, err);
             if (err || t != 1) {
-                ++non_res;
+                ++non_residential;
+            } else {
+                ++residential;
             }
         }
-        if (non_res > 0) {
-            std::cerr << "Neighborhood validation: " << name << " has " << non_res
-                      << " non-residential cells tagged!" << std::endl;
+        double residential_pct = (cells.size() > 0) 
+            ? (100.0 * residential / cells.size()) 
+            : 0.0;
+        
+        std::cout << "Neighborhood validation: " << name << " has " 
+                  << residential << " residential (" << std::fixed << std::setprecision(1) 
+                  << residential_pct << "%) and " << non_residential 
+                  << " non-residential cells." << std::endl;
+        
+        if (residential_pct < 90.0) {
+            std::cerr << "WARNING: " << name << " has less than 90% residential cells!" 
+                      << std::endl;
         }
     };
     check_set(oasis_cells, "Oasis");
@@ -668,6 +735,10 @@ void RepastHPCModel::runAllHumans() {
       "Primary activity", "Leisure activity", "Home return"
     };
 
+	// Print current tick
+	int tick_now = repast::RepastProcess::instance()->getScheduleRunner().currentTick();
+	std::cout << "=== TICK " << tick_now << " ===\n";
+
     // Ensure per-tick unique counting for newly infected humans across all phases
     std::unordered_set<long long> counted_new_cases_this_tick;
 
@@ -691,10 +762,7 @@ void RepastHPCModel::runAllHumans() {
           dest = h->getHomeLocation();
         }
 
-        // c) log & move
-        std::cout << "Human " << id.id()
-                  << " from (" << oldLoc[0] << "," << oldLoc[1] << ")"
-                  << " → ("   << dest[0]   << "," << dest[1]   << ")\n";
+        // c) move
         discreteSpace->moveTo(id, dest);
 
         // d) infection & mosquito update
@@ -882,7 +950,7 @@ void RepastHPCModel::initRecords(){
 
         // Initialize weekly neighborhood CSV
         std::ofstream ofs2("weekly_neighborhood_cases.csv", std::ofstream::trunc);
-        ofs2 << "week,new_cases_oasis,new_cases_laquinina\n";
+        ofs2 << "week,new_cases_oasis,new_cases_laquinina,total_humans_oasis,total_humans_laquinina\n";
         ofs2.close();
 	}
 }
@@ -898,9 +966,28 @@ void RepastHPCModel::recordResults(){
         // Every 7 ticks (excluding tick 0), write weekly neighborhood totals and reset
         int tick = repast::RepastProcess::instance()->getScheduleRunner().currentTick();
         if (tick != 0 && (tick % 7) == 0) {
+            // Count total humans in each neighborhood
+            total_humans_oasis = 0;
+            total_humans_laquinina = 0;
+            
+            std::vector<Human*> humans;
+            context.selectAgents(countOfHumans, humans);
+            for (Human* h : humans) {
+                std::vector<int> loc;
+                discreteSpace->getLocation(h->getId(), loc);
+                repast::Point<int> pt(loc[0], loc[1]);
+                bool err = false;
+                int nid = valueLayerNeighborhood->getValueAt(pt, err);
+                if (!err) {
+                    if (nid == 1) ++total_humans_oasis;
+                    else if (nid == 2) ++total_humans_laquinina;
+                }
+            }
+            
             std::ofstream ofs("weekly_neighborhood_cases.csv", std::ios_base::app);
             int week = tick / 7;
-            ofs << week << "," << new_cases_oasis << "," << new_cases_laquinina << "\n";
+            ofs << week << "," << new_cases_oasis << "," << new_cases_laquinina 
+                << "," << total_humans_oasis << "," << total_humans_laquinina << "\n";
             ofs.close();
             new_cases_oasis = 0;
             new_cases_laquinina = 0;

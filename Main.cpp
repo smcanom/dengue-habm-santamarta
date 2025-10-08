@@ -27,7 +27,11 @@ int main(int argc, char** argv){
 	model->init(); //se inizializan los humanos y los grid value layers
 	model->initSchedule(runner);
 	runner.run();
-	repast::RepastProcess::instance()->done();
 	std::cout << "Fin de la simulacion " << endl;
+	
+	// Delete model BEFORE calling RepastProcess::done()
 	delete model;
+	
+	// Clean up Repast process last
+	repast::RepastProcess::instance()->done();
 }
