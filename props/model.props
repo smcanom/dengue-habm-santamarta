@@ -1,8 +1,37 @@
 #Properties file
-stop.at = 365
+stop.at = 150
 count.of.humans = 100000
-count.of.infected.humans = 5
+count.of.infected.humans=4
 
 x.dim=135
 y.dim=200
-global.random.seed=10
+global.random.seed=12348
+random.seed=12348
+
+# HI-based stochastic activation mask parameters
+hi.activate = true
+hi.eta = 0.73
+hi.seed = 42
+hi.values.file = hi_by_neighborhood_2023.csv
+
+# === Sensitivity Analysis Parameters ===
+# Model parameters (with nominal defaults)
+sigma_M=0.3
+sigma_H=3.0
+z=0.3
+r=0.6
+C=30.0
+beta_mh=0.11000000000000001
+beta_hm=0.1
+
+# Random seed control (for CRN)
+base_seed=12345
+replicate_id=3
+
+# Configuration metadata
+config_id=beta_mh_p10
+perturb_param=beta_mh
+perturb_delta=0.1
+
+# Observed data for RMSE computation (optional)
+obs_csv=view/incidence_rates_santa_marta.csv

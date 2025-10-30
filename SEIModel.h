@@ -2,6 +2,10 @@
 #define SEIMODEL_H
 #include <vector>
 #include <deque>
+
+// Forward declaration
+struct Params;
+
  class SEIModel{
     private:
         double suceptibleMosquitoes;
@@ -15,24 +19,27 @@
         std::deque<double> eggQueue;
         int maturationDelay;         // τ, in ticks
         double femaleProportion;     // ρ, fraction of emergent adults that are female
+        double emergenceMultiplier;  // ω_i, fixed per-patch multiplier from HI
+        const Params* params_;       // pointer to global parameters (not owned)
     
     public:
         static constexpr double naturalEmergenceRate=0.1;
-        static constexpr double mosquitoCarryingCapacity=50; // old 1000
-        static constexpr double mosquitoBiteDemand=20;
-        static constexpr double maxBitesPerHuman=10; // old 19
-        static constexpr double probabilityOfTransmissionHToM=0.1; // old 0.333
-        static constexpr double z = 0.3;
-        static constexpr double probabilityOfTransmissionMToH=0.1; // old 0.333
+        static constexpr double mosquitoBiteDemand=0.3;  // More realistic
+        static constexpr double maxBitesPerHuman=3;     // More realistic
+        // Parameters now obtained from params_:
+        // double mosquitoCarryingCapacity; -> params_->C
+        // double probabilityOfTransmissionHToM; -> params_->beta_hm
+        // double z; -> params_->z
+        // double probabilityOfTransmissionMToH; -> params_->beta_mh
 
         //METHODS
         //constructors
         SEIModel() : suceptibleMosquitoes(0), exposedMosquitoes(0), infectedMosquitoes(0), 
                     temperature(0), infectedHumans(0), nHumans(0), deathRate(0), 
-                    maturationDelay(11), femaleProportion(0.46) {}
+                    maturationDelay(11), femaleProportion(0.46), emergenceMultiplier(1.0), params_(nullptr) {}
 
         SEIModel(double suceptibleM, double exposedM, double infectedM, double temp,
-           int delayTicks = 18, double femaleFrac = 0.46);
+           int delayTicks = 18, double femaleFrac = 0.46, double omega = 1.0, const Params* params = nullptr);
 
         // SEIModel(double suceptibleM, double exposedM, double infectedM, double temp,
         //         repast::SharedContext<AgenteHumano>* context,
@@ -55,6 +62,7 @@
         void setTemp(double temp);
         void setHumans(int humans);
         void setInfectedHumans(int infected);
+        void setEmergenceMultiplier(double omega);
         
         //most important methods
         void recalculateSEI(double timeStep, double totalM0, double totalM1);

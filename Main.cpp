@@ -16,9 +16,38 @@ int main(int argc, char** argv){
 	
 	repast::RepastProcess::init(configFile); //crear un RepastProcess usanfo el metodo init. Esto siempre es obligatorio
 	
+	// Parse parameters from model.props
+	repast::Properties props(propsFile, argc, argv, &world);
+	Params params;
+	
+	// Read parameters with defaults
+	params.sigma_M = (props.getProperty("sigma_M") != "") ? repast::strToDouble(props.getProperty("sigma_M")) : 0.3;
+	params.sigma_H = (props.getProperty("sigma_H") != "") ? repast::strToDouble(props.getProperty("sigma_H")) : 3.0;
+	params.z = (props.getProperty("z") != "") ? repast::strToDouble(props.getProperty("z")) : 0.3;
+	params.r = (props.getProperty("r") != "") ? repast::strToDouble(props.getProperty("r")) : 0.6;
+	params.C = (props.getProperty("C") != "") ? repast::strToDouble(props.getProperty("C")) : 30.0;
+	params.beta_mh = (props.getProperty("beta_mh") != "") ? repast::strToDouble(props.getProperty("beta_mh")) : 0.10;
+	params.beta_hm = (props.getProperty("beta_hm") != "") ? repast::strToDouble(props.getProperty("beta_hm")) : 0.10;
+	params.base_seed = (props.getProperty("base_seed") != "") ? repast::strToInt(props.getProperty("base_seed")) : 12345;
+	params.replicate_id = (props.getProperty("replicate_id") != "") ? repast::strToInt(props.getProperty("replicate_id")) : 0;
+	params.config_id = (props.getProperty("config_id") != "") ? props.getProperty("config_id") : "baseline";
+	params.perturb_param = (props.getProperty("perturb_param") != "") ? props.getProperty("perturb_param") : "baseline";
+	params.perturb_delta = (props.getProperty("perturb_delta") != "") ? repast::strToDouble(props.getProperty("perturb_delta")) : 0.0;
+	params.obs_csv = (props.getProperty("obs_csv") != "") ? props.getProperty("obs_csv") : "";
+	
+	// Apply perturbation if specified
+	if (params.perturb_param != "baseline" && params.perturb_delta != 0.0) {
+		if (params.perturb_param == "sigma_M") params.sigma_M *= (1.0 + params.perturb_delta);
+		else if (params.perturb_param == "sigma_H") params.sigma_H *= (1.0 + params.perturb_delta);
+		else if (params.perturb_param == "z") params.z *= (1.0 + params.perturb_delta);
+		else if (params.perturb_param == "r") params.r *= (1.0 + params.perturb_delta);
+		else if (params.perturb_param == "C") params.C *= (1.0 + params.perturb_delta);
+		else if (params.perturb_param == "beta_mh") params.beta_mh *= (1.0 + params.perturb_delta);
+		else if (params.perturb_param == "beta_hm") params.beta_hm *= (1.0 + params.perturb_delta);
+	}
 		
 	// crear el modelo
-	RepastHPCModel* model = new RepastHPCModel(propsFile, argc, argv, &world); //Crear un modelo de repast
+	RepastHPCModel* model = new RepastHPCModel(propsFile, argc, argv, &world, params); //Crear un modelo de repast
 	//crear una instancia de un repast schedule runner 
 	repast::ScheduleRunner& runner = repast::RepastProcess::instance()->getScheduleRunner(); //se uriliza el repast ptocess creado arriba
 	

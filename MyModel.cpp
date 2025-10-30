@@ -3,12 +3,14 @@
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <cmath>
 #include <random>
 #include <queue>
 #include <vector>
 #include <iomanip>
+#include <stdexcept>
 #include <boost/mpi.hpp>
 #include "repast_hpc/AgentId.h"
 #include "repast_hpc/RepastProcess.h"
@@ -44,6 +46,62 @@ void HumanPackageProvider::provideContent(repast::AgentRequest req, std::vector<
 void RepastHPCModel::resetNeighborhoodCounters() {
 	new_cases_oasis = 0;
 	new_cases_laquinina = 0;
+	new_cases_ondasdelcaribe = 0;
+	new_cases_pantano = 0;
+	new_cases_ochodediciembre = 0;
+	new_cases_lacoquera = 0;
+	new_cases_sanjacinto = 0;
+	new_cases_nuevabethel = 0;
+}
+
+static inline std::string trim_csv(const std::string& s) {
+    auto b = s.find_first_not_of(" \t\r\n");
+    auto e = s.find_last_not_of(" \t\r\n");
+    return (b == std::string::npos) ? "" : s.substr(b, e - b + 1);
+}
+
+void RepastHPCModel::loadHIFromCSV(const std::string& csv_path) {
+    hi_prob_by_neigh.clear();
+
+    std::ifstream in(csv_path.c_str());
+    if (!in) throw std::runtime_error("Cannot open HI CSV at: " + csv_path);
+
+    std::string line;
+    if (!std::getline(in, line)) throw std::runtime_error("Empty HI CSV: " + csv_path);
+    // Expect header: neighborhood_id,neighborhood_name,hi_mean
+
+    while (std::getline(in, line)) {
+        if (trim_csv(line).empty()) continue;
+        std::istringstream ss(line);
+        std::string id_str, name_str, hi_str;
+
+        if (!std::getline(ss, id_str, ',')) continue;
+        if (!std::getline(ss, name_str, ',')) continue;
+        if (!std::getline(ss, hi_str, ','))  continue;
+
+        int nid = std::stoi(trim_csv(id_str));
+        double hi = std::stod(trim_csv(hi_str));     // already in [0,1]
+        if (hi < 0.0) hi = 0.0;
+        if (hi > 1.0) hi = 1.0;
+
+        hi_prob_by_neigh[nid] = hi;
+    }
+    if (hi_prob_by_neigh.empty())
+        throw std::runtime_error("No rows parsed from HI CSV: " + csv_path);
+    
+    std::cout << "Loaded HI data for " << hi_prob_by_neigh.size() << " neighborhoods" << std::endl;
+}
+
+std::pair<int,int> RepastHPCModel::latlon_to_grid(double lat, double lon) const {
+    // Latitude: 11.075 → y=0, 11.250 → y=200
+    // y = (lat - 11.075) / 0.175 * 200
+    int y = static_cast<int>(std::round((lat - 11.075) / 0.175 * 200.0));
+    
+    // Longitude: -74.240 → x=0, -74.140 → x=135
+    // x = (lon - (-74.240)) / 0.100 * 135
+    int x = static_cast<int>(std::round((lon - (-74.240)) / 0.100 * 135.0));
+    
+    return {x, y};
 }
 
 void RepastHPCModel::assignNeighborhoodCluster(const std::string& name, int nid,
@@ -51,13 +109,9 @@ void RepastHPCModel::assignNeighborhoodCluster(const std::string& name, int nid,
     using Pt = std::pair<int,int>;
     std::queue<Pt> q;
     std::unordered_set<long long> visited;
-    
-    int residential_count = 0;
-    int total_count = 0;
-    const double MIN_RESIDENTIAL_RATIO = 0.90; // At least 90% residential
 
-    // Modified try_enqueue: allow non-residential cells within a small radius for contiguity
-    auto try_enqueue = [&](int x, int y, int distance_from_seed) {
+    // try_enqueue: residential-only, active, unassigned cells
+    auto try_enqueue = [&](int x, int y) {
         if (x < 0 || x >= xdim || y < 0 || y >= ydim) return;
         long long key = pack_xy(x,y);
         if (visited.count(key)) return;
@@ -66,34 +120,11 @@ void RepastHPCModel::assignNeighborhoodCluster(const std::string& name, int nid,
         bool err = false;
         repast::Point<int> pt(x,y);
         int t = valueLayerType->getValueAt(pt, err);
-        if (err) return;
-        
+        if (err || t != 1) return;            // residential only (Type==1)
         int cur = valueLayerNeighborhood->getValueAt(pt, err);
         if (err || cur != 0) return;          // avoid overlap
-        
-        // Allow non-residential cells if:
-        // 1) We're still building and ratio is good, OR
-        // 2) It's residential
-        bool is_residential = (t == 1);
-        bool would_maintain_ratio = true;
-        
-        if (!is_residential && total_count > 0) {
-            // Check if adding this non-residential cell would drop below threshold
-            double new_ratio = static_cast<double>(residential_count) / (total_count + 1);
-            would_maintain_ratio = (new_ratio >= MIN_RESIDENTIAL_RATIO);
-            
-            // Also limit non-residential cells to nearby areas (within ~15 cells of seed)
-            int dx = std::abs(x - cx);
-            int dy = std::abs(y - cy);
-            if (dx * dx + dy * dy > 225) { // radius ~15
-                would_maintain_ratio = false;
-            }
-        }
-        
-        if (is_residential || would_maintain_ratio) {
-            visited.insert(key);
-            q.emplace(x,y);
-        }
+        visited.insert(key);
+        q.emplace(x,y);
     };
 
     auto find_residential_seed = [&]() -> bool {
@@ -138,53 +169,48 @@ void RepastHPCModel::assignNeighborhoodCluster(const std::string& name, int nid,
         repast::Point<int> pt(x,y);
         int existing = valueLayerNeighborhood->getValueAt(pt, err);
         if (!err && existing == 0) {
-            // Check cell type before adding
-            int t = valueLayerType->getValueAt(pt, err);
-            bool is_residential = (!err && t == 1);
-            
-            // Add the cell
+            // Assign to neighborhood
             valueLayerNeighborhood->setValueAt(nid, pt, err);
             long long key = pack_xy(x,y);
+            
+            // Record in appropriate set
             if (nid == 1) oasis_cells.insert(key);
             else if (nid == 2) laquinina_cells.insert(key);
-            ++filled;
-            ++total_count;
-            if (is_residential) ++residential_count;
-
-            // Calculate distance from seed for neighbor expansion
-            int dist = std::abs(x - cx) + std::abs(y - cy);
+            else if (nid == 3) ondasdelcaribe_cells.insert(key);
+            else if (nid == 4) pantano_cells.insert(key);
+            else if (nid == 5) ochodediciembre_cells.insert(key);
+            else if (nid == 6) lacoquera_cells.insert(key);
+            else if (nid == 7) sanjacinto_cells.insert(key);
+            else if (nid == 8) nuevabethel_cells.insert(key);
             
-            // 4-neighbor expansion
-            try_enqueue(x+1, y, dist+1);
-            try_enqueue(x-1, y, dist+1);
-            try_enqueue(x, y+1, dist+1);
-            try_enqueue(x, y-1, dist+1);
+            ++filled;
+
+            // 4-neighbor expansion (fixed order for determinism)
+            try_enqueue(x+1, y);
+            try_enqueue(x-1, y);
+            try_enqueue(x, y+1);
+            try_enqueue(x, y-1);
         }
     }
 
-    double final_residential_ratio = (total_count > 0) 
-        ? static_cast<double>(residential_count) / total_count 
-        : 0.0;
-    
-    std::cout << "[Neighborhood " << name << "] assigned " << filled << " cells ("
-              << residential_count << " residential, " 
-              << (total_count - residential_count) << " non-residential, "
-              << std::fixed << std::setprecision(1) 
-              << (final_residential_ratio * 100.0) << "% residential)" << std::endl;
+    std::cout << "[Neighborhood " << name << "] assigned " << filled << " / " << target_cells 
+              << " cells" << std::endl;
 
     if (filled < target_cells) {
-        std::cerr << "[Neighborhood " << name << "] requested " << target_cells
-                  << " cells, assigned " << filled << "." << std::endl;
+        std::cerr << "WARNING: [Neighborhood " << name << "] requested " << target_cells
+                  << " cells, assigned " << filled << " (shortfall: " 
+                  << (target_cells - filled) << ")" << std::endl;
     }
 }
 
 //OBLIGATORY (NO SE MUY BIEN PARA QUE ES)
-HumanPackageReceiver::HumanPackageReceiver(repast::SharedContext<Human>* agentPtr): agents(agentPtr){}
+HumanPackageReceiver::HumanPackageReceiver(repast::SharedContext<Human>* agentPtr, const Params* params)
+    : agents(agentPtr), params_(params) {}
 
 //OBLIGATORY (NO SE MUY BIEN PARA QUE ES)
 Human * HumanPackageReceiver::createAgent(HumanPackage package){
     repast::AgentId id(package.id, package.rank, package.type, package.currentRank);
-    return new Human(id, package.infectionState, package.age, package.timeSinceSuccesfullBite, package.timeSinceInfection, package.homeLocation, package.activities);
+    return new Human(id, package.infectionState, package.age, package.timeSinceSuccesfullBite, package.timeSinceInfection, package.homeLocation, package.activities, params_);
 
 }
 
@@ -196,10 +222,15 @@ void HumanPackageReceiver::updateAgent(HumanPackage package){
 }
 
 //CONSTRUCTOR 
-RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boost::mpi::communicator* comm): context(comm){
+RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boost::mpi::communicator* comm, const Params& params)
+    : context(comm), params_(params) {
 	props = new repast::Properties(propsFile, argc, argv, comm); 
 	//atributes that come from the model.props file
     start_time = std::chrono::steady_clock::now();
+    
+	// Compute run seed for CRN (Common Random Numbers)
+	run_seed = params_.base_seed + params_.replicate_id;
+	
 	stopAt = repast::strToInt(props->getProperty("stop.at")); 
 	countOfHumans= repast::strToInt(props->getProperty("count.of.humans"));
 	countOfInfectedHumans= repast::strToInt(props->getProperty("count.of.infected.humans"));
@@ -282,6 +313,8 @@ RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boo
 	valueLayerType=new repast::ValueLayerND<int>(processDims, gd, bufferSize, false);
 	// Neighborhood tagging layer: 0 = none, 1 = Oasis, 2 = La Quinina
 	valueLayerNeighborhood = new repast::ValueLayerND<int>(processDims, gd, bufferSize, false);
+	// HI activation mask layer
+	valueLayerHI_activated = new repast::ValueLayerND<int>(processDims, gd, bufferSize, false);
 
 	//These value layers store the total mosquitoes on t-2.
 	valuetotalmosquitoes0 = new repast::ValueLayerND<int>(processDims, gd, bufferSize, false);
@@ -290,7 +323,7 @@ RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boo
     // Initialize mosquitoPatches as a flat array:
     mosquitoPatches.resize(patchCenters.size());
     for (size_t i = 0; i < patchCenters.size(); ++i) {
-        mosquitoPatches[i] = SEIModel(0,0,0,0, /*delay=*/11, /*rho=*/0.5);
+        mosquitoPatches[i] = SEIModel(0,0,0,0, /*delay=*/11, /*rho=*/0.5, /*omega=*/1.0, &params_);
     }
 	
 
@@ -312,7 +345,7 @@ RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boo
 	
 	//NO SE MUY BIEN PARA QUE SON LAS DOS SIGUIENTES LINEAS
 	provider=new HumanPackageProvider(&context);
-	receiver=new HumanPackageReceiver(&context);
+	receiver=new HumanPackageReceiver(&context, &params_);
 	
 }
 
@@ -363,6 +396,10 @@ RepastHPCModel::~RepastHPCModel() {
         delete valuetotalmosquitoes1;
         valuetotalmosquitoes1 = nullptr;
     }
+    if (valueLayerHI_activated) {
+        delete valueLayerHI_activated;
+        valueLayerHI_activated = nullptr;
+    }
 
     // Delete properties
     if (props) {
@@ -381,9 +418,18 @@ RepastHPCModel::~RepastHPCModel() {
     otherActivitiesLocations.clear();
     oasis_cells.clear();
     laquinina_cells.clear();
+    ondasdelcaribe_cells.clear();
+    pantano_cells.clear();
+    ochodediciembre_cells.clear();
+    lacoquera_cells.clear();
+    sanjacinto_cells.clear();
+    nuevabethel_cells.clear();
     active_cells.clear();
 }
  void RepastHPCModel::init(){
+	// Load HI data before initializing grid (hardcoded path like other input files)
+	loadHIFromCSV("hi_by_neighborhood_2023.csv");
+	
 	initGridValueLayers();
 	initHumans();
 	writeCsv("locations.csv");
@@ -428,7 +474,7 @@ void RepastHPCModel::initHumans(){
 				timeSinceInfection=0;
 			}
 			//SE CREA EL HUMANO Y SE METE AL CONTEXT 
-			Human* H=new Human(id,infectionState,age,timeSinceSuccesfullBite,timeSinceInfection,homeLocation,activities);
+			Human* H=new Human(id,infectionState,age,timeSinceSuccesfullBite,timeSinceInfection,homeLocation,activities,&params_);
 			context.addAgent(H);
 
 			//SE UBICA EL HUMANO EN LA HOME LOCATION
@@ -548,7 +594,7 @@ void RepastHPCModel::initGridValueLayers() {
             .next();
         valueLayerTemperature->setValueAt(temperature, location, err);
 
-        int rand_susc = triangularSampleInt(0,10,50);
+        int rand_susc = triangularSampleInt(0,15,30);
         int rand_exp  = 0;
         int rand_inf  = repast::Random::instance()
                           ->createUniIntGenerator(0,2).next();
@@ -568,7 +614,7 @@ void RepastHPCModel::initGridValueLayers() {
 
         mosquitoPatches[i] = SEIModel(rand_susc, rand_exp, rand_inf,
                                       static_cast<int>(temperature),
-                                      delay, rho);
+                                      delay, rho, /*omega=*/1.0, &params_);
 
         // 3.5 Assign patch type
         // 3.5 Assign patch type with beach prioritization
@@ -633,45 +679,227 @@ void RepastHPCModel::initGridValueLayers() {
 
     // 3.7 Assign neighborhoods after type layer is populated
     {
-        int oasis_cx = 90;  // within [80,100]
-        int oasis_cy = 180; // within [170,190]
-        int laq_cx   = 38;  // within [30,45]
-        int laq_cy   = 120; // within [115,125]
-
-        oasis_center_x = oasis_cx; oasis_center_y = oasis_cy;
-        laquinina_center_x = laq_cx; laquinina_center_y = laq_cy;
-
-        assignNeighborhoodCluster("Oasis", 1, oasis_cx, oasis_cy, oasis_target_cells);
-        assignNeighborhoodCluster("La Quinina", 2, laq_cx, laq_cy, laquinina_target_cells);
+        std::cout << "\n=== Assigning Neighborhoods ===" << std::endl;
+        
+        // Existing neighborhoods (manual seeds)
+        auto oasis_coords = latlon_to_grid(11.238449, -74.164696);
+        assignNeighborhoodCluster("Oasis", 1, oasis_coords.first, oasis_coords.second, 108);
+        auto laquinina_coords = latlon_to_grid(11.18233,-74.21992);
+        assignNeighborhoodCluster("La Quinina", 2, laquinina_coords.first, laquinina_coords.second, 172);
+        
+        // New neighborhoods (from lat/lon centroids)
+        // Ondas del Caribe: 11.241997, -74.167821
+        auto ondas_coords = latlon_to_grid(11.241997, -74.167821);
+        assignNeighborhoodCluster("Ondas del Caribe", 3, ondas_coords.first, ondas_coords.second, 100);
+        
+        // Pantano: 11.239484, -74.173353
+        auto pantano_coords = latlon_to_grid(11.239484, -74.173353);
+        assignNeighborhoodCluster("Pantano", 4, pantano_coords.first, pantano_coords.second, 103);
+        
+        // 8 de Diciembre: 11.244997, -74.164336
+        auto ocho_coords = latlon_to_grid(11.244997, -74.164336);
+        assignNeighborhoodCluster("8 de Diciembre", 5, ocho_coords.first, ocho_coords.second, 147);
+        
+        // La Coquera: 11.187200, -74.222770
+        auto coquera_coords = latlon_to_grid(11.187200, -74.222770);
+        assignNeighborhoodCluster("La Coquera", 6, coquera_coords.first, coquera_coords.second, 147);
+        
+        // San Jacinto: 11.190480, -74.221800
+        auto sanjacinto_coords = latlon_to_grid(11.190480, -74.221800);
+        assignNeighborhoodCluster("San Jacinto", 7, sanjacinto_coords.first, sanjacinto_coords.second, 147);
+        
+        // Nueva Bethel: 11.190158, -74.214619
+        auto bethel_coords = latlon_to_grid(11.190158, -74.214619);
+        assignNeighborhoodCluster("Nueva Bethel", 8, bethel_coords.first, bethel_coords.second, 122);
 
         valueLayerNeighborhood->synchronize();
 
         // Validate: all neighborhood cells must be residential (type=1)
+        std::cout << "\n=== Validating Neighborhoods ===" << std::endl;
         validateNeighborhoodsResidentialOnly();
 
-        // Optional debug CSV of assigned cells
+        // Export CSV with all neighborhoods
         try {
             std::ofstream dbg("neighborhood_cells.csv", std::ofstream::trunc);
-            dbg << "neighborhood,x,y\n";
+            dbg << "neighborhood_id,neighborhood_name,x,y\n";
+            
             for (const auto& key : oasis_cells) {
                 int x = static_cast<int>(key >> 32);
                 int y = static_cast<int>(key & 0xFFFFFFFFULL);
-                dbg << "Oasis," << x << "," << y << "\n";
+                dbg << "1,Oasis," << x << "," << y << "\n";
             }
             for (const auto& key : laquinina_cells) {
                 int x = static_cast<int>(key >> 32);
                 int y = static_cast<int>(key & 0xFFFFFFFFULL);
-                dbg << "La Quinina," << x << "," << y << "\n";
+                dbg << "2,La Quinina," << x << "," << y << "\n";
             }
+            for (const auto& key : ondasdelcaribe_cells) {
+                int x = static_cast<int>(key >> 32);
+                int y = static_cast<int>(key & 0xFFFFFFFFULL);
+                dbg << "3,Ondas del Caribe," << x << "," << y << "\n";
+            }
+            for (const auto& key : pantano_cells) {
+                int x = static_cast<int>(key >> 32);
+                int y = static_cast<int>(key & 0xFFFFFFFFULL);
+                dbg << "4,Pantano," << x << "," << y << "\n";
+            }
+            for (const auto& key : ochodediciembre_cells) {
+                int x = static_cast<int>(key >> 32);
+                int y = static_cast<int>(key & 0xFFFFFFFFULL);
+                dbg << "5,8 de Diciembre," << x << "," << y << "\n";
+            }
+            for (const auto& key : lacoquera_cells) {
+                int x = static_cast<int>(key >> 32);
+                int y = static_cast<int>(key & 0xFFFFFFFFULL);
+                dbg << "6,La Coquera," << x << "," << y << "\n";
+            }
+            for (const auto& key : sanjacinto_cells) {
+                int x = static_cast<int>(key >> 32);
+                int y = static_cast<int>(key & 0xFFFFFFFFULL);
+                dbg << "7,San Jacinto," << x << "," << y << "\n";
+            }
+            for (const auto& key : nuevabethel_cells) {
+                int x = static_cast<int>(key >> 32);
+                int y = static_cast<int>(key & 0xFFFFFFFFULL);
+                dbg << "8,Nueva Bethel," << x << "," << y << "\n";
+            }
+            
+            std::cout << "✓ Exported neighborhood_cells.csv" << std::endl;
         } catch (...) {
             std::cerr << "Warning: failed to write neighborhood_cells.csv" << std::endl;
         }
+        
+        // Export summary
+        try {
+            std::ofstream summary("summary_neighborhood_sizes.csv", std::ofstream::trunc);
+            summary << "neighborhood_id,name,target_cells,realized_cells\n";
+            summary << "1,Oasis,108," << oasis_cells.size() << "\n";
+            summary << "2,La Quinina,172," << laquinina_cells.size() << "\n";
+            summary << "3,Ondas del Caribe,100," << ondasdelcaribe_cells.size() << "\n";
+            summary << "4,Pantano,103," << pantano_cells.size() << "\n";
+            summary << "5,8 de Diciembre,147," << ochodediciembre_cells.size() << "\n";
+            summary << "6,La Coquera,147," << lacoquera_cells.size() << "\n";
+            summary << "7,San Jacinto,147," << sanjacinto_cells.size() << "\n";
+            summary << "8,Nueva Bethel,122," << nuevabethel_cells.size() << "\n";
+            
+            std::cout << "✓ Exported summary_neighborhood_sizes.csv" << std::endl;
+        } catch (...) {
+            std::cerr << "Warning: failed to write summary_neighborhood_sizes.csv" << std::endl;
+        }
+        
+        // 3.8 Initialize HI-based stochastic activation mask
+        std::cout << "\n=== Initializing HI-Based Activation Mask ===" << std::endl;
+        
+        // Read configuration parameters
+        bool hi_activate = (props->getProperty("hi.activate") == "true");
+        double eta = repast::strToDouble(props->getProperty("hi.eta"));
+        int hi_seed = repast::strToInt(props->getProperty("hi.seed"));
+        
+        std::cout << "hi.activate = " << (hi_activate ? "true" : "false") << std::endl;
+        std::cout << "hi.eta (baseline) = " << eta << std::endl;
+        std::cout << "hi.seed = " << hi_seed << std::endl;
+        
+        // Create a dedicated RNG for HI activation (seeded independently)
+        std::mt19937 hi_rng(hi_seed);
+        std::uniform_real_distribution<double> uniform_01(0.0, 1.0);
+        
+        int activated_count = 0;
+        int total_residential = 0;
+        
+        // Prepare CSV output (rank 0 only)
+        std::vector<std::string> activation_csv_lines;
+        if (repast::RepastProcess::instance()->rank() == 0) {
+            activation_csv_lines.push_back("x,y,neighborhood_id,HI_bar,X_i,omega_i");
+        }
+        
+        for (size_t i = 0; i < patchCenters.size(); ++i) {
+            double rawX = patchCenters[i].first;
+            double rawY = patchCenters[i].second;
+            
+            // Recompute grid coordinates
+            double normX = (rawX - minRawX) / (maxRawX - minRawX);
+            double normY = (rawY - minRawY) / (maxRawY - minRawY);
+            int coordX = static_cast<int>(std::round(normX * (xdim - 1)));
+            int coordY = static_cast<int>(std::round(normY * (ydim - 1)));
+            repast::Point<int> pt(coordX, coordY);
+            
+            bool err = false;
+            int type = valueLayerType->getValueAt(pt, err);
+            
+            // Initialize default values
+            int X_i = 0;
+            double omega_i = 1.0;
+            
+            // Only process residential patches (type == 1) if HI is activated
+            if (!err && type == 1 && hi_activate) {
+                total_residential++;
+                
+                // Get neighborhood tag
+                int nid = valueLayerNeighborhood->getValueAt(pt, err);
+                
+                // Lookup HI probability
+                double hi_bar = 0.0;
+                if (auto it = hi_prob_by_neigh.find(nid); it != hi_prob_by_neigh.end()) {
+                    hi_bar = it->second;
+                }
+                
+                // Draw Bernoulli(hi_bar) using dedicated HI RNG
+                X_i = (uniform_01(hi_rng) < hi_bar) ? 1 : 0;
+                if (X_i == 1) activated_count++;
+                
+                // Compute omega = eta + (1 - eta) * X_i
+                omega_i = eta + (1.0 - eta) * X_i;
+                
+                // Store X_i in value layer for demonstration
+                valueLayerHI_activated->setValueAt(X_i, pt, err);
+                
+                // Record for CSV (rank 0 only)
+                if (repast::RepastProcess::instance()->rank() == 0) {
+                    std::ostringstream oss;
+                    oss << coordX << "," << coordY << "," << nid << "," 
+                        << std::fixed << std::setprecision(6) << hi_bar << "," 
+                        << X_i << "," << omega_i;
+                    activation_csv_lines.push_back(oss.str());
+                }
+            } else {
+                // Non-residential or HI disabled: X_i=0, omega=1.0
+                valueLayerHI_activated->setValueAt(0, pt, err);
+            }
+            
+            // Set emergence multiplier on SEIModel
+            mosquitoPatches[i].setEmergenceMultiplier(omega_i);
+        }
+        
+        // Synchronize HI layer
+        valueLayerHI_activated->synchronize();
+        
+        // Write activation map CSV (rank 0 only) - this is the key output for demonstration
+        if (repast::RepastProcess::instance()->rank() == 0) {
+            try {
+                std::ofstream out("hi_activation_map.csv", std::ofstream::trunc);
+                for (const auto& line : activation_csv_lines) {
+                    out << line << "\n";
+                }
+                out.close();
+                std::cout << "✓ Wrote hi_activation_map.csv with " 
+                         << (activation_csv_lines.size() - 1) << " patches" << std::endl;
+            } catch (...) {
+                std::cerr << "Warning: failed to write hi_activation_map.csv" << std::endl;
+            }
+        }
+        
+        double activation_rate = (total_residential > 0) 
+            ? (static_cast<double>(activated_count) / total_residential) 
+            : 0.0;
+        std::cout << "Residential patches: " << total_residential << std::endl;
+        std::cout << "Activated patches (X=1): " << activated_count 
+                  << " (" << (activation_rate * 100.0) << "%)" << std::endl;
+        std::cout << "✓ HI activation mask initialized" << std::endl;
     }
 }
 
 void RepastHPCModel::validateNeighborhoodsResidentialOnly(){
     auto check_set = [&](const std::unordered_set<long long>& cells, const char* name){
-        int residential = 0;
         int non_residential = 0;
         for (const auto& key : cells) {
             int x = static_cast<int>(key >> 32);
@@ -681,26 +909,23 @@ void RepastHPCModel::validateNeighborhoodsResidentialOnly(){
             int t = valueLayerType->getValueAt(pt, err);
             if (err || t != 1) {
                 ++non_residential;
-            } else {
-                ++residential;
+                std::cerr << "ERROR: " << name << " has non-residential cell at (" 
+                          << x << "," << y << "), Type=" << t << std::endl;
             }
         }
-        double residential_pct = (cells.size() > 0) 
-            ? (100.0 * residential / cells.size()) 
-            : 0.0;
-        
-        std::cout << "Neighborhood validation: " << name << " has " 
-                  << residential << " residential (" << std::fixed << std::setprecision(1) 
-                  << residential_pct << "%) and " << non_residential 
-                  << " non-residential cells." << std::endl;
-        
-        if (residential_pct < 90.0) {
-            std::cerr << "WARNING: " << name << " has less than 90% residential cells!" 
-                      << std::endl;
+        if (non_residential > 0) {
+            std::cerr << "VALIDATION FAILED: " << name << " has " << non_residential
+                      << " non-residential cells!" << std::endl;
         }
     };
     check_set(oasis_cells, "Oasis");
     check_set(laquinina_cells, "La Quinina");
+    check_set(ondasdelcaribe_cells, "Ondas del Caribe");
+    check_set(pantano_cells, "Pantano");
+    check_set(ochodediciembre_cells, "8 de Diciembre");
+    check_set(lacoquera_cells, "La Coquera");
+    check_set(sanjacinto_cells, "San Jacinto");
+    check_set(nuevabethel_cells, "Nueva Bethel");
 }
 double RepastHPCModel::get_border_x(int coordY) {
     // Handle edge cases
@@ -795,6 +1020,12 @@ void RepastHPCModel::runAllHumans() {
             if (!err_n) {
               if (nid == 1) ++new_cases_oasis;
               else if (nid == 2) ++new_cases_laquinina;
+              else if (nid == 3) ++new_cases_ondasdelcaribe;
+              else if (nid == 4) ++new_cases_pantano;
+              else if (nid == 5) ++new_cases_ochodediciembre;
+              else if (nid == 6) ++new_cases_lacoquera;
+              else if (nid == 7) ++new_cases_sanjacinto;
+              else if (nid == 8) ++new_cases_nuevabethel;
             }
             counted_new_cases_this_tick.insert(human_key);
           }
@@ -802,7 +1033,7 @@ void RepastHPCModel::runAllHumans() {
 
         int m1 = valuetotalmosquitoes1->getValueAt(pt, err);
         int m0 = valuetotalmosquitoes0->getValueAt(pt, err);
-        SEIModel patch(susc, exposed, infd, temp);
+        SEIModel patch(susc, exposed, infd, temp, 18, 0.46, 1.0, &params_);
         patch.setHumans(nHumans);
         patch.setInfectedHumans(nInfected);
         patch.recalculateSEI(0.1, m0, m1);
@@ -814,11 +1045,14 @@ void RepastHPCModel::runAllHumans() {
         valueLayerInfectedMosquitoes->setValueAt(
           patch.getInfectedMosquitoes(),   pt, err);
 
-        if (phase == 2) {
-          // final phase: update time counters on the human
-          h->actualizeTimes();
-        }
+        // Update time counters once per tick (after all movement phases)
+        // This should happen for all humans, not just in final phase
       }
+    }
+
+    // Update time counters for all humans once per tick
+    for (Human* h : humans) {
+        h->actualizeTimes();
     }
 
     std::cout << "=== HUMAN MOVEMENT COMPLETE ===\n";
@@ -950,7 +1184,12 @@ void RepastHPCModel::initRecords(){
 
         // Initialize weekly neighborhood CSV
         std::ofstream ofs2("weekly_neighborhood_cases.csv", std::ofstream::trunc);
-        ofs2 << "week,new_cases_oasis,new_cases_laquinina,total_humans_oasis,total_humans_laquinina\n";
+        ofs2 << "week,new_cases_oasis,new_cases_laquinina,new_cases_ondasdelcaribe,"
+             << "new_cases_pantano,new_cases_ochodediciembre,new_cases_lacoquera,"
+             << "new_cases_sanjacinto,new_cases_nuevabethel,"
+             << "total_humans_oasis,total_humans_laquinina,total_humans_ondasdelcaribe,"
+             << "total_humans_pantano,total_humans_ochodediciembre,total_humans_lacoquera,"
+             << "total_humans_sanjacinto,total_humans_nuevabethel\n";
         ofs2.close();
 	}
 }
@@ -969,6 +1208,12 @@ void RepastHPCModel::recordResults(){
             // Count total humans in each neighborhood
             total_humans_oasis = 0;
             total_humans_laquinina = 0;
+            total_humans_ondasdelcaribe = 0;
+            total_humans_pantano = 0;
+            total_humans_ochodediciembre = 0;
+            total_humans_lacoquera = 0;
+            total_humans_sanjacinto = 0;
+            total_humans_nuevabethel = 0;
             
             std::vector<Human*> humans;
             context.selectAgents(countOfHumans, humans);
@@ -981,16 +1226,37 @@ void RepastHPCModel::recordResults(){
                 if (!err) {
                     if (nid == 1) ++total_humans_oasis;
                     else if (nid == 2) ++total_humans_laquinina;
+                    else if (nid == 3) ++total_humans_ondasdelcaribe;
+                    else if (nid == 4) ++total_humans_pantano;
+                    else if (nid == 5) ++total_humans_ochodediciembre;
+                    else if (nid == 6) ++total_humans_lacoquera;
+                    else if (nid == 7) ++total_humans_sanjacinto;
+                    else if (nid == 8) ++total_humans_nuevabethel;
                 }
             }
             
             std::ofstream ofs("weekly_neighborhood_cases.csv", std::ios_base::app);
             int week = tick / 7;
-            ofs << week << "," << new_cases_oasis << "," << new_cases_laquinina 
-                << "," << total_humans_oasis << "," << total_humans_laquinina << "\n";
+            ofs << week << "," 
+                << new_cases_oasis << "," << new_cases_laquinina << ","
+                << new_cases_ondasdelcaribe << "," << new_cases_pantano << ","
+                << new_cases_ochodediciembre << "," << new_cases_lacoquera << ","
+                << new_cases_sanjacinto << "," << new_cases_nuevabethel << ","
+                << total_humans_oasis << "," << total_humans_laquinina << ","
+                << total_humans_ondasdelcaribe << "," << total_humans_pantano << ","
+                << total_humans_ochodediciembre << "," << total_humans_lacoquera << ","
+                << total_humans_sanjacinto << "," << total_humans_nuevabethel << "\n";
             ofs.close();
+            
+            // Reset all counters
             new_cases_oasis = 0;
             new_cases_laquinina = 0;
+            new_cases_ondasdelcaribe = 0;
+            new_cases_pantano = 0;
+            new_cases_ochodediciembre = 0;
+            new_cases_lacoquera = 0;
+            new_cases_sanjacinto = 0;
+            new_cases_nuevabethel = 0;
         }
 	}
 }

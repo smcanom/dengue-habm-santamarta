@@ -1,4 +1,5 @@
 #include "SEIModel.h"
+#include "MyModel.h"  // for Params
 #include <random>
 #include <iostream>
 #include <vector>
@@ -13,7 +14,7 @@ using namespace std;
 
 //constructor
 SEIModel::SEIModel(double suceptibleM, double exposedM, double infectedM, double temp,
-                   int delayTicks, double femaleFrac)
+                   int delayTicks, double femaleFrac, double omega, const Params* params)
   : suceptibleMosquitoes(std::max(0.0, suceptibleM)),
     exposedMosquitoes(std::max(0.0, exposedM)),
     infectedMosquitoes(std::max(0.0, infectedM)),
@@ -22,15 +23,19 @@ SEIModel::SEIModel(double suceptibleM, double exposedM, double infectedM, double
     nHumans(0),
     deathRate(0),
     maturationDelay(std::max(1, delayTicks)),
-    femaleProportion(std::max(0.0, std::min(1.0, femaleFrac)))
+    femaleProportion(std::max(0.0, std::min(1.0, femaleFrac))),
+    emergenceMultiplier(std::max(0.0, omega)),
+    params_(params)
 {
   // Calcula población inicial de adultos
   double N0 = suceptibleMosquitoes + exposedMosquitoes + infectedMosquitoes;
 
   // Tasa de puesta en t = 0 (misma fórmula que en recalculateSEI)
-  double reproductionRate = 0.2;
+  // Use r from params if available, else fall back to 0.2
+  double reproductionRate = params_ ? params_->r : 0.6;
+  double carryingCapacity = params_ ? params_->C : 20.0;
   double At0 = reproductionRate * N0 *
-               std::exp(1.0 - (N0 / mosquitoCarryingCapacity));
+               std::exp(1.0 - (N0 / carryingCapacity));
 
   // Evita valores negativos por si acaso
   At0 = std::max(0.0, At0);
@@ -83,6 +88,10 @@ void SEIModel::setInfectedHumans(int infected){
     infectedHumans = infected;
 }
 
+void SEIModel::setEmergenceMultiplier(double omega){
+    emergenceMultiplier = std::max(0.0, omega);
+}
+
 void SEIModel::recalculateSEI(double h, double totalM0, double totalM1) {
     try {
         // 1. Compute death rate
@@ -98,9 +107,11 @@ void SEIModel::recalculateSEI(double h, double totalM0, double totalM1) {
         double N_lag = (tick % 2 == 0) ? std::max(0.0, totalM0) : std::max(0.0, totalM1);
 
         // 4. Calculate density-dependent egg laying
-        double reproductionRate = 0.6;
+        // Use r and C from params if available
+        double reproductionRate = params_ ? params_->r : 0.6;
+        double carryingCapacity = params_ ? params_->C : 20.0;
 
-        double At = reproductionRate * N_lag * std::exp(1.0 - (N / mosquitoCarryingCapacity));
+        double At = reproductionRate * N_lag * std::exp(1.0 - (N / carryingCapacity));
 
         // 5. Update egg queue
         double eggsMaturing = 0.0;
@@ -108,7 +119,7 @@ void SEIModel::recalculateSEI(double h, double totalM0, double totalM1) {
         eggsMaturing = eggQueue.front();      // grab the cohort laid delayTicks ago
         eggQueue.pop_front();                 // remove it from the buffer
         }
-        // 6. Enqueue today’s eggs (female fraction)
+        // 6. Enqueue today's eggs (female fraction)
         double At_fem = At * femaleProportion;
         eggQueue.push_back(std::max(0.0, At_fem));
 
@@ -116,14 +127,16 @@ void SEIModel::recalculateSEI(double h, double totalM0, double totalM1) {
         const double larvalSurvival = 0.9;
         const double pupalSurvival = 0.98;
         double phi = larvalSurvival * pupalSurvival;
-        double newAdults = eggsMaturing * phi;
+        double newAdults = eggsMaturing * phi * emergenceMultiplier;
 
-        // 8. Calculate human-mosquito interaction
-        double Pv = 1.0 - std::pow((S / N), z);
+        // 8. Calculate human-mosquito interaction using z from params
+        double z_param = params_ ? params_->z : 0.3;
+        double Pv = 1.0 - std::pow((S / N), z_param);
 
-        // 9. Update mosquito populations
-        double S_next = S * (1.0 - probabilityOfTransmissionHToM * Pv) * (1.0 - deathRate) + newAdults;
-        double I_next = S * probabilityOfTransmissionHToM * Pv * (1.0 - deathRate) + I * (1.0 - deathRate);
+        // 9. Update mosquito populations using beta_hm from params
+        double beta_hm = params_ ? params_->beta_hm : 0.1;
+        double S_next = S * (1.0 - beta_hm * Pv) * (1.0 - deathRate) + newAdults;
+        double I_next = S * beta_hm * Pv * (1.0 - deathRate) + I * (1.0 - deathRate);
 
         // 10. Ensure non-negative values
         suceptibleMosquitoes = int(std::max(0.0, S_next));
@@ -193,7 +206,8 @@ double SEIModel::infected_function(double suceptible,double exposed,double infec
 double SEIModel::calculateBirthRate() {
     double totalMosquitoes=suceptibleMosquitoes+infectedMosquitoes+exposedMosquitoes;
     double mosquitoPopulationGrowthRate=naturalEmergenceRate-deathRate;
-    double birthRate=totalMosquitoes*(naturalEmergenceRate-mosquitoPopulationGrowthRate*totalMosquitoes/mosquitoCarryingCapacity);
+    double carryingCapacity = params_ ? params_->C : 20.0;
+    double birthRate=totalMosquitoes*(naturalEmergenceRate-mosquitoPopulationGrowthRate*totalMosquitoes/carryingCapacity);
     return birthRate;
 }
 
@@ -227,7 +241,8 @@ double SEIModel::calculateInfectionRate() { //depende del numero de humanos en e
     double successfulBitesPerMosquito=totalSuccesfulBites/totalMosquitoes;
     double infectionRateMosquitoes=0;
     if (totalHumans>0) {
-        infectionRateMosquitoes=successfulBitesPerMosquito*probabilityOfTransmissionHToM*((humansInfected+0.0)/totalHumans);
+        double beta_hm = params_ ? params_->beta_hm : 0.1;
+        infectionRateMosquitoes=successfulBitesPerMosquito*beta_hm*((humansInfected+0.0)/totalHumans);
     }
     return infectionRateMosquitoes;
 }

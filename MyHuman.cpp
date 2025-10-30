@@ -1,10 +1,11 @@
 #include "MyHuman.h"
+#include "MyModel.h"  // for Params
 #include <cmath>
 #include <random>
 #include <algorithm>
 //constructor that takes arguments 
 Human::Human(repast::AgentId id, string InfectionState, int Age, int TimeSinceSuccesfullBite, int TimeSinceInfection, 
-             std::vector<int> HomeLocation, std::vector<std::vector<int>> Activities)
+             std::vector<int> HomeLocation, std::vector<std::vector<int>> Activities, const Params* params)
     : id_(id),
       infectionState(std::move(InfectionState)),
       age(std::max(0, Age)),
@@ -13,7 +14,8 @@ Human::Human(repast::AgentId id, string InfectionState, int Age, int TimeSinceSu
       homeLocation(std::move(HomeLocation)),
       activities(std::move(Activities)),
       infectionProb(0.0),
-      newlyInfected(false)
+      newlyInfected(false),
+      params_(params)
 {
     // Validate activities
     if (activities.size() != 2) {
@@ -97,9 +99,18 @@ void Human::actualizeTimes(){
     try {
         if (infectionState == "exposed") {
             timeSinceSuccesfullBite++;
+            // Check for progression to infected
+            if (timeSinceSuccesfullBite >= 5) {  // 5-day incubation period
+                infectionState = "infected";
+                timeSinceInfection = 0;
+            }
         }
         else if (infectionState == "infected") {
             timeSinceInfection++;
+            // Check for recovery
+            if (timeSinceInfection >= 7) {  // 7-day infection period
+                infectionState = "recovered";
+            }
         }
     } catch (const std::exception& e) {
         std::cerr << "Error in actualizeTimes: " << e.what() << std::endl;
@@ -123,21 +134,10 @@ void Human::actualizeSEIRStatus(repast::SharedContext<Human>* context) {
             }
         }
         else if (infectionState == "exposed") {
-            timeSinceSuccesfullBite++;
-            
-            // Check for progression to infected
-            if (timeSinceSuccesfullBite >= 5) {  // 5-day incubation period
-                infectionState = "infected";
-                timeSinceInfection = 0;
-            }
+            // State progression handled by actualizeTimes()
         }
         else if (infectionState == "infected") {
-            timeSinceInfection++;
-            
-            // Check for recovery
-            if (timeSinceInfection >= 7) {  // 7-day infection period
-                infectionState = "recovered";
-            }
+            // State progression handled by actualizeTimes()
         }
         
     } catch (const std::exception& e) {
@@ -176,8 +176,11 @@ void Human::calculateInfectionProbabilityHuman(int infected, int susc, int nHuma
         double biteProb = (mosquitoBiteDemand * totalMosquitoes) / 
                          (mosquitoBiteDemand * totalMosquitoes + maxBitesPerHuman * humanDensity);
         
+        // Use beta_mh from params if available
+        double beta_mh = params_ ? params_->beta_mh : 0.1;
+        
         // Calculate infection probability
-        infectionProb = biteProb * probabilityOfTransmissionMToH * 
+        infectionProb = biteProb * beta_mh * 
                        (static_cast<double>(infected) / totalMosquitoes);
         
         // Ensure probability is between 0 and 1

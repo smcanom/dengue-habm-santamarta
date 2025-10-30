@@ -12,7 +12,7 @@ class CSVWriter{
         std::string fileName;
         std::string delimeter;
     public:
-        CSVWriter(std::string Filename = "results_100k.csv", std::string Delimiter = ",");
+        CSVWriter(std::string Filename = "results.csv", std::string Delimiter = ",");
         void initCSVFile();
         //CSVWriter(std::string  Filename, std::string Delimiter);
         void appendRecord(int* values);

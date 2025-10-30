@@ -14,6 +14,9 @@
 #include <boost/math/distributions/lognormal.hpp>
 #include <random>
 
+// Forward declaration
+struct Params;
+
 using namespace std;
 using namespace repast;
 class Human{
@@ -27,19 +30,21 @@ class Human{
         std::vector<std::vector<int>> activities;
         double infectionProb;
         bool newlyInfected;
+        const Params* params_;  // pointer to global parameters (not owned)
     
     public:
         //Constant variables (they are the same for each instance)
         const double naturalEmergenceRate=0.1;
         const double deathRate=0.071428571428571;
-        const double mosquitoCarryingCapacity=50;
-        const double mosquitoBiteDemand=20;
-        const double maxBitesPerHuman= 10;
-        const double probabilityOfTransmissionHToM=0.1;
-        const double probabilityOfTransmissionMToH=0.1;
+        const double mosquitoBiteDemand=0.3;  // More realistic: ~0.3 bites per mosquito per day
+        const double maxBitesPerHuman= 3;     // More realistic: humans get bitten ~3 times per day
+        // Parameters now obtained from params_:
+        // double mosquitoCarryingCapacity -> params_->C
+        // double probabilityOfTransmissionHToM -> params_->beta_hm
+        // double probabilityOfTransmissionMToH -> params_->beta_mh
         
         //constructor
-        Human(repast::AgentId id,string InfectionState, int Age, int TimeSinceSuccesfullBite,int TimeSinceInfection, std::vector<int> HomeLocation, std::vector<std::vector<int>> Activities);
+        Human(repast::AgentId id,string InfectionState, int Age, int TimeSinceSuccesfullBite,int TimeSinceInfection, std::vector<int> HomeLocation, std::vector<std::vector<int>> Activities, const Params* params = nullptr);
 
         //required getters
         virtual repast:: AgentId& getId(){return id_;}

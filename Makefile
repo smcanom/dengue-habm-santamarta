@@ -53,4 +53,5 @@ modifyenv:
 
 .ONESHELL:
 run:
+	rm -f results_gridchange.csv weekly_neighborhood_cases.csv neighborhood_cells.csv summary_neighborhood_sizes.csv
 	mpirun -n $(n) ./Main.exe ./props/config.props ./props/model.props
