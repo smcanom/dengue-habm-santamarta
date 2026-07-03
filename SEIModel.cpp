@@ -129,14 +129,31 @@ void SEIModel::recalculateSEI(double h, double totalM0, double totalM1) {
         double phi = larvalSurvival * pupalSurvival;
         double newAdults = eggsMaturing * phi * emergenceMultiplier;
 
-        // 8. Calculate human-mosquito interaction using z from params
-        double z_param = params_ ? params_->z : 0.3;
-        double Pv = 1.0 - std::pow((S / N), z_param);
-
-        // 9. Update mosquito populations using beta_hm from params
+        // 8. Human->mosquito force of infection (paper Eq. psi):
+        //        Psi_h = 1 - ((N_h - H_i)/N_h)^z
+        //    the infected-HUMAN interaction probability, with z the interaction parameter,
+        //    H_i the infected humans and N_h the total humans in the patch. Susceptible
+        //    mosquitoes become infected at rate beta_hm * Psi_h.
+        //    This corrects the earlier code's  Pv = 1 - (S/N)^z , which used the MOSQUITO
+        //    susceptible fraction (S, N = mosquitoes) instead of the human fraction -- so
+        //    infected humans never infected mosquitoes and infected-mosquito extinction was
+        //    absorbing. z is the live interaction parameter here (paper Table params_sm).
         double beta_hm = params_ ? params_->beta_hm : 0.1;
-        double S_next = S * (1.0 - beta_hm * Pv) * (1.0 - deathRate) + newAdults;
-        double I_next = S * beta_hm * Pv * (1.0 - deathRate) + I * (1.0 - deathRate);
+        double z_param = params_ ? params_->z : 0.3;
+        double Psi_h = 0.0;
+        if (nHumans > 0) {
+            double susHumanFrac = static_cast<double>(nHumans - infectedHumans)
+                                  / static_cast<double>(nHumans);
+            susHumanFrac = std::max(0.0, std::min(1.0, susHumanFrac));
+            Psi_h = 1.0 - std::pow(susHumanFrac, z_param);
+        }
+        double infForce = beta_hm * Psi_h;                  // fraction of S mosquitoes infected
+        infForce = std::max(0.0, std::min(1.0, infForce));
+
+        // 9. Update mosquito populations (paper Eq. mosquito_dynamics) with temperature-
+        //    dependent survival (1 - deathRate = 1 - mu_m), plus aquatic recruitment newAdults.
+        double S_next = S * (1.0 - infForce) * (1.0 - deathRate) + newAdults;
+        double I_next = S * infForce * (1.0 - deathRate) + I * (1.0 - deathRate);
 
         // 10. Ensure non-negative values
         suceptibleMosquitoes = int(std::max(0.0, S_next));

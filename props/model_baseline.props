@@ -1,0 +1,39 @@
+#Properties file -- canonical NOMINAL calibration baseline
+# (reconstructed; the committed props/model.props was left in a sensitivity-run state:
+#  stop.at=150, beta_mh=0.11, config_id=beta_mh_p10. The actual I0 calibration used
+#  stop.at=365 at 100k agents -- confirmed from calib_I0_runs/*/seed_*.csv tick range.)
+stop.at = 365
+count.of.humans = 100000
+count.of.infected.humans=4
+
+x.dim=135
+y.dim=200
+global.random.seed=12348
+random.seed=12348
+
+# HI-based stochastic activation mask parameters
+hi.activate = true
+hi.eta = 0.73
+hi.seed = 42
+hi.values.file = hi_by_neighborhood_2023.csv
+
+# === Model parameters (nominal expert values; Table params_sm) ===
+sigma_M=0.3
+sigma_H=3.0
+z=0.3
+r=0.6
+C=30.0
+beta_mh=0.10
+beta_hm=0.10
+
+# Random seed control (for CRN)
+base_seed=12345
+replicate_id=0
+
+# Configuration metadata
+config_id=baseline
+perturb_param=baseline
+perturb_delta=0.0
+
+# Observed data for RMSE computation (optional)
+obs_csv=view/incidence_rates_santa_marta.csv

@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
+#include <random>
 #include <chrono>
 #include "repast_hpc/Schedule.h"
 #include "repast_hpc/Properties.h"
@@ -132,6 +133,11 @@ private:
 
     // Temperature time series
     std::vector<std::vector<int>> dataTemperatures;
+    // Dedicated RNG for daily temperature draws. Kept SEPARATE from repast::Random
+    // (the global stream that drives infection/movement) so sampling temperature each
+    // tick does not perturb the epidemic's Common-Random-Number streams. Seeded from
+    // run_seed for per-run reproducibility.
+    std::mt19937 tempRng_;
     // persistent SEIModel grid and fast lookup
     std::vector<SEIModel> mosquitoPatches;
     std::unordered_map<long long, std::pair<int,int>> locToIndex;

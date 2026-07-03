@@ -230,6 +230,10 @@ RepastHPCModel::RepastHPCModel(std::string propsFile, int argc, char** argv, boo
     
 	// Compute run seed for CRN (Common Random Numbers)
 	run_seed = params_.base_seed + params_.replicate_id;
+	// Seed the dedicated temperature RNG from run_seed (offset so it is not identical
+	// to the global stream's seed). Independent stream => daily temperature sampling
+	// does not consume or shift the global repast::Random draws used for epidemic dynamics.
+	tempRng_.seed(static_cast<std::mt19937::result_type>(run_seed + 1000003));
 	
 	stopAt = repast::strToInt(props->getProperty("stop.at")); 
 	countOfHumans= repast::strToInt(props->getProperty("count.of.humans"));
@@ -1089,6 +1093,30 @@ void RepastHPCModel::runAllPatches() {
     minRawY = std::min(minRawY, p.second);
     maxRawY = std::max(maxRawY, p.second);
     }
+
+    // --- Daily temperature forcing from the input climate series (SantaMartaChange.csv) ---
+    // One simulation tick == one day. Index the loaded daily max/min series by the current
+    // day so temperature varies over the year instead of staying frozen at the day-0 value
+    // used during initialization. Wrap the index if the run horizon exceeds the series length.
+    int dayIdx = repast::RepastProcess::instance()->getScheduleRunner().currentTick() - 1;
+    if (dayIdx < 0) dayIdx = 0;
+    int nTempDays = dataTemperatures.empty() ? 0 : static_cast<int>(dataTemperatures[0].size());
+    int dayTempMax = 30, dayTempMin = 20;  // safe fallback if the series is missing
+    if (nTempDays > 0) {
+        int di = dayIdx % nTempDays;
+        dayTempMax = dataTemperatures[0][di];
+        dayTempMin = (dataTemperatures.size() > 1 &&
+                      static_cast<int>(dataTemperatures[1].size()) > di)
+                     ? dataTemperatures[1][di] : dayTempMax;
+        if (dayTempMin > dayTempMax) std::swap(dayTempMin, dayTempMax);
+    }
+    // One distribution per day, drawn per patch from the DEDICATED tempRng_ stream:
+    // keeps the spatial heterogeneity of the original per-patch initialization while making
+    // temperature time-varying, WITHOUT consuming the global repast::Random stream that
+    // drives infection/movement (doing so reshuffles the CRN streams and collapses the
+    // epidemic). tempRng_ is seeded from run_seed, so daily temperature is reproducible.
+    std::uniform_real_distribution<double> dayTempDist(dayTempMin, dayTempMax);
+
     for (size_t i = 0; i < N; ++i) {
         // 4.2 Fetch centroid & scale
         double rawX = patchCenters[i].first;
@@ -1108,7 +1136,11 @@ void RepastHPCModel::runAllPatches() {
         int S = valueLayerSuceptibleMosquitoes->getValueAt(pt, err);
         int E = valueLayerExposedMosquitoes->getValueAt(pt, err);
         int I = valueLayerInfectedMosquitoes->getValueAt(pt, err);
-        int T = valueLayerTemperature->getValueAt(pt, err);
+        // Daily temperature drawn from the dedicated tempRng_ stream (does NOT consume the
+        // global repast::Random stream that drives infection/movement), then written back so
+        // the layer stays consistent for downstream reads.
+        int T = static_cast<int>(dayTempDist(tempRng_));
+        valueLayerTemperature->setValueAt(T, pt, err);
         // 1. Check for retrieval errors
         if (err) {
         std::cerr << "Error getting values at patch [" << i 

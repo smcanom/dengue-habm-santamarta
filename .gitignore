@@ -1,13 +1,55 @@
-# Ignore build artifacts
+# ── Compiled / build artifacts ────────────────────────────────
 *.o
 *.exe
 *.dll
 *.so
-
-# Ignore IDE settings
-.vscode/
-.vs/
-
-# Ignore build directories
 build/
 out/
+
+# ── IDE / editor ──────────────────────────────────────────────
+.vscode/
+.vs/
+.idea/
+
+# ── Python ────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+
+# ── Logs & OS / Windows junk ──────────────────────────────────
+*.log
+*.bak
+*.bak_*
+*Zone.Identifier
+.DS_Store
+
+# ── Simulation run outputs (regenerable; not for the repo) ─────
+*_runs/
+*_runs_window/
+calib_I0_runs/
+calib_bo_runs/
+calib_bo_runs_window/
+sa_corrected_runs/
+test_run/
+_sa_workdirs/
+_bo_workdirs/
+*.npy
+
+# ── LaTeX build artifacts ─────────────────────────────────────
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.out
+*.synctex.gz
+*.toc
+
+# ── Local-only material (not for publication) ─────────────────
+articles/
+*.zip
+CLAUDE.md
+MODEL_CORRECTION_MEMO.md
+IMPLEMENTATION_SUMMARY.md
+props/_timing80.props
+results.xls

@@ -5,14 +5,14 @@
 #
 #*******************************
 
-MPICXX=mpicxx -std=c++17
+MPICXX=mpicxx -std=c++17 -O2 -DNDEBUG
 
 BOOST_INCLUDE=-I/usr/include
 BOOST_LIB_DIR=-L/usr/lib/x86_64-linux-gnu
 BOOST_LIBS=-lboost_mpi -lboost_serialization -lboost_system -lboost_filesystem
 
-REPAST_HPC_INCLUDE=-I/home/pescuder/repast.hpc/src
-REPAST_HPC_LIB_DIR=-L/home/pescuder/repast.hpc/Debug/bin
+REPAST_HPC_INCLUDE=-I/home/scano/sfw/repast_hpc-2.3.1/include
+REPAST_HPC_LIB_DIR=-L/home/scano/sfw/repast_hpc-2.3.1/lib
 REPAST_HPC_LIB=-lrepast_hpc-2.3.1
 
 GDAL_INCLUDE=

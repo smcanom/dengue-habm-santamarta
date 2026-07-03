@@ -1,0 +1,18 @@
+[project]
+name = "dengue-habm-calibration"
+version = "0.1.0"
+description = "Python tooling (calibration, sensitivity, Bayesian optimization) for the Santa Marta dengue HABM."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "scipy>=1.11",
+    "scikit-learn>=1.3",
+    "scikit-optimize>=0.10",   # skopt: GP surrogate + gp_minimize for Bayesian calibration
+    "matplotlib>=3.7",
+]
+
+# Scripts-only repo: install the dependencies into a venv but do NOT try to
+# build/package this project itself.
+[tool.uv]
+package = false

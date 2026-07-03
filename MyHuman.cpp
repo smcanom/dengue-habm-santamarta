@@ -172,17 +172,22 @@ void Human::calculateInfectionProbabilityHuman(int infected, int susc, int nHuma
             return;
         }
 
-        // Calculate bite probability
-        double biteProb = (mosquitoBiteDemand * totalMosquitoes) / 
-                         (mosquitoBiteDemand * totalMosquitoes + maxBitesPerHuman * humanDensity);
-        
-        // Use beta_mh from params if available
+        // Expected number of bites in the patch (paper Eq. bites), with sigma_M and sigma_H
+        // the maximum bite rates per mosquito and per human. These were previously hardcoded
+        // as the constants mosquitoBiteDemand (=0.3) and maxBitesPerHuman (=3), which silently
+        // overrode the sigma_M / sigma_H model parameters -- so perturbing them did nothing.
+        double sigma_M = params_ ? params_->sigma_M : 0.3;  // max bite rate per mosquito
+        double sigma_H = params_ ? params_->sigma_H : 3.0;  // max bite rate per human
+        double b_k = (sigma_M * totalMosquitoes * sigma_H * humanDensity) /
+                     (sigma_M * totalMosquitoes + sigma_H * humanDensity);
+        double b_h = b_k / humanDensity;                    // bites per human (paper b_h^k)
+
+        // Human force of infection and S->E probability (paper Eq. human_infection):
+        //   lambda_h = b_h * beta_mh * (M_i / N_M),   p_SE,h = 1 - exp(-lambda_h)
         double beta_mh = params_ ? params_->beta_mh : 0.1;
-        
-        // Calculate infection probability
-        infectionProb = biteProb * beta_mh * 
-                       (static_cast<double>(infected) / totalMosquitoes);
-        
+        double lambda_h = b_h * beta_mh * (static_cast<double>(infected) / totalMosquitoes);
+        infectionProb = 1.0 - std::exp(-std::max(0.0, lambda_h));
+
         // Ensure probability is between 0 and 1
         infectionProb = std::max(0.0, std::min(1.0, infectionProb));
         
